@@ -14,3 +14,6 @@ temp_*.png
 # Editor/OS-brus
 .DS_Store
 Thumbs.db
+
+# Claude Code - körtidsstate, inte projektkonfiguration
+.claude/scheduled_tasks.lock

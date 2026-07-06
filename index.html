@@ -264,7 +264,12 @@
     <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 text-white px-6 py-4 rounded shadow-2xl transition-opacity duration-300 opacity-0 pointer-events-none z-[7000] border-l-4 border-orange-500 max-w-sm"></div>
 
     <script>
-        const API_BASE = "http://localhost:8000";
+        // Lokalt (localhost) pratar vi med den lokala backend-processen för att kunna
+        // testa okommitterade ändringar - i övrigt (t.ex. GitHub Pages) mot den skarpa
+        // Render-driftsatta backend.
+        const API_BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
+            ? "http://localhost:8000"
+            : "https://fornkompassen-api.onrender.com";
 
         // ==========================================
         // DINA SUPABASE NYCKLAR HÄR!
