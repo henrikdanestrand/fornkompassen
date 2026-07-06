@@ -1,0 +1,16 @@
+# Hemligheter - får ALDRIG hamna i git
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Tillfälliga filer skapade av main.py vid bearbetning
+temp_*.tif
+temp_*.jpg
+temp_*.jpeg
+temp_*.png
+
+# Editor/OS-brus
+.DS_Store
+Thumbs.db

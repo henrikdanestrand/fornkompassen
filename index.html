@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fornkompassen - Inpassning & Arkiv</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Bibliotek för GeoTIFF, Georaster och Supabase -->
+    <script src="https://unpkg.com/georaster"></script>
+    <script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <style>
+        /* Grundläggande layout */
+        #map, #leftMap { height: 100%; width: 100%; z-index: 10; }
+        
+        .image-marker { 
+            width: 24px; height: 24px; background-color: #ef4444; border-radius: 50%; border: 2px solid white; 
+            display: flex; justify-content: center; align-items: center; color: white; font-size: 12px; font-weight: bold; 
+            pointer-events: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: all 0.2s ease;
+        }
+        
+        .highlight-marker {
+            transform: scale(1.4); box-shadow: 0 0 0 4px #fde047, 0 0 15px rgba(0,0,0,0.6) !important;
+            z-index: 1000 !important; background-color: #ea580c;
+        }
+        
+        .pending-marker {
+            width: 24px; height: 24px; background-color: #f59e0b; border-radius: 50%; border: 2px dashed white; 
+            display: flex; justify-content: center; align-items: center; color: white; font-size: 12px; font-weight: bold; 
+            pointer-events: auto; cursor: pointer; box-shadow: 0 0 8px rgba(245, 158, 11, 0.8); animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+        }
+        
+        .custom-div-icon { background: none; border: none; }
+        
+        #globalLoader { transition: opacity 0.3s; }
+        .loader-spinner {
+            border: 4px solid rgba(255,255,255,0.3); border-top: 4px solid #f97316;
+            border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        #loupe {
+            width: 160px; height: 160px; border-radius: 50%; border: 3px solid #f97316;
+            position: absolute; pointer-events: none; display: none; z-index: 2000;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5), inset 0 0 10px rgba(0,0,0,0.3);
+            background-color: #fff; background-repeat: no-repeat;
+        }
+        #loupe::after {
+            content: '+'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #f97316; font-size: 24px; font-weight: normal;
+        }
+
+        /* ==========================================
+           FAS 3: FÄLTLÄGE & MOBILOPTIMERING
+           På små skärmar (mobil/fält) är poängen att navigera med redan
+           inpassade kartor + GPS - inte att sitta och passa in nya kartor.
+           Vänsterkartan och hela inpassnings-verktygsraden döljs helt, och
+           högerkartan (den moderna/riktiga) tar 100% av skärmen. ========== */
+        @media (max-width: 768px) {
+            #imageContainerWrapper { display: none !important; }
+            #rightMapWrapper { width: 100% !important; }
+            #closeArchiveMapBtn { display: none !important; }
+            .desktop-only { display: none !important; }
+            #gcpPanel, #archivePanel, #stacPanel { width: 100vw !important; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col font-sans">
+
+    <!-- HEADER -->
+    <header class="bg-slate-800 text-white p-4 shadow-md flex justify-between items-center z-20">
+        <div>
+            <h1 class="text-2xl font-bold tracking-tight text-orange-400">Fornkompassen</h1>
+            <p class="text-xs text-slate-400 mt-1">Georeferering och fältarkiv</p>
+        </div>
+        <div class="flex items-center space-x-3">
+            
+            <button id="toggleLoupeBtn" class="desktop-only bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm font-semibold transition border border-slate-600 text-slate-400" title="Förstoringsglas">
+                <span>🔍</span>
+            </button>
+
+            <button id="toggleGcpBtn" class="desktop-only bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm font-semibold transition border border-slate-600 flex items-center">
+                <span>📍 Punkter</span> <span id="gcpBadge" class="ml-2 bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">0</span>
+            </button>
+
+            <!-- NYTT: Mitt Arkiv (dold om man inte är inloggad) -->
+            <button id="toggleArchiveBtn" class="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded text-sm font-semibold transition border border-blue-500 flex items-center hidden">
+                <span>📂 Mitt Arkiv</span>
+            </button>
+
+            <!-- NYTT: Flygfoto från Lantmäteriets STAC-bild -->
+            <!-- Återaktiverad 2026-07-06: Geotorget-behörigheten "Ortofoto Nedladdning" godkänd. -->
+            <button id="toggleStacBtn" class="desktop-only bg-teal-600 hover:bg-teal-500 px-3 py-2 rounded text-sm font-semibold transition border border-teal-500 flex items-center">
+                <span>🛰️ Flygfoto</span>
+            </button>
+
+            <!-- NYTT: Inloggning / Logga ut -->
+            <button id="authBtn" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm font-semibold transition border border-slate-600 flex items-center">
+                <span>🔑 Logga in</span>
+            </button>
+
+            <div class="desktop-only w-px h-6 bg-slate-600 mx-1"></div>
+
+            <label class="desktop-only cursor-pointer bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm font-semibold transition border border-slate-600">
+                Ladda upp karta
+                <input type="file" id="imageUpload" accept="image/*,.tif,.tiff" class="hidden">
+            </label>
+            <button id="saveBtn" title="Beräknar och lägger den historiska kartan ovanpå den moderna kartan" class="desktop-only bg-green-600 hover:bg-green-500 px-5 py-2 rounded text-sm font-bold shadow-lg transition opacity-50 cursor-not-allowed" disabled>
+                🧩 Beräkna Inpassning
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex overflow-hidden relative">
+        
+        <!-- VÄNSTER SIDA (Historisk bild) -->
+        <div class="w-1/2 h-full border-r-4 border-slate-800 relative bg-slate-200 transition-all duration-500" id="imageContainerWrapper">
+            <div id="loupe"></div>
+            
+            <div id="uploadPrompt" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 z-20 cursor-pointer hover:bg-slate-300 transition duration-200">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mb-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <p class="text-lg font-semibold">Klicka här för att ladda upp en skärmdump eller TIFF</p>
+            </div>
+            <div id="leftMap" class="hidden cursor-crosshair"></div>
+        </div>
+
+        <!-- HÖGER SIDA (Modern karta) -->
+        <div class="w-1/2 h-full relative transition-all duration-500" id="rightMapWrapper">
+            
+            <div id="swipeContainer" class="absolute inset-0 z-[1000] hidden pointer-events-none">
+                <div id="swipeHandle" class="absolute top-0 bottom-0 w-8 flex items-center justify-center pointer-events-auto cursor-ew-resize" style="left: calc(50% - 16px);">
+                    <div class="absolute inset-y-0 left-1/2 -translate-x-1/2 w-1 bg-red-500 shadow-lg pointer-events-none"></div>
+                    <div class="relative w-8 h-8 bg-white border-2 border-red-500 rounded-full flex justify-center items-center shadow-lg pointer-events-none">
+                        <span class="text-red-500 text-xs font-bold">↔</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="instructionBanner" class="absolute top-4 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-2 rounded-full shadow-lg z-[1100] font-bold text-sm pointer-events-none transition-opacity duration-300 opacity-0">
+                Klicka på samma punkt på andra sidan!
+            </div>
+
+            <!-- NYTT: Knapp för att stänga Arkiv-karta och återgå till delad skärm -->
+            <button id="closeArchiveMapBtn" class="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-2 rounded-full shadow-lg z-[1100] font-bold text-sm hover:bg-red-500 transition hidden">
+                Stäng arkivkarta (Återgå till inpassning)
+            </button>
+            
+            <!-- Kontrollpanel för Opacitet & Svep -->
+            <div id="opacityControl" class="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-800/95 backdrop-blur text-white px-2 py-2 rounded-full shadow-2xl z-[1100] flex flex-col items-center hidden border border-slate-600 transition-all">
+                <div class="flex space-x-1 mb-2 bg-slate-700 p-1 rounded-full w-full justify-center">
+                    <button id="modeOpacityBtn" class="px-4 py-1 text-xs font-bold rounded-full bg-slate-500 text-white transition-colors">Opacitet</button>
+                    <button id="modeSwipeBtn" class="px-4 py-1 text-xs font-bold rounded-full text-slate-300 hover:text-white transition-colors">Svep-läge</button>
+                </div>
+                <div id="opacitySliderWrapper" class="flex items-center space-x-4 px-4 pb-2">
+                    <span id="opacityLabelLeft" class="text-xs font-bold uppercase tracking-widest text-slate-300">Satellit</span>
+                    <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="0.7" class="w-40 h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-orange-500">
+                    <span id="opacityLabelRight" class="text-xs font-bold uppercase tracking-widest text-orange-400">Gammal Karta</span>
+                </div>
+            </div>
+
+            <button id="gpsBtn" class="absolute top-4 left-16 bg-white text-slate-700 px-4 py-2 rounded shadow-lg z-[1000] font-bold text-sm border border-slate-300 hover:bg-slate-50 transition flex items-center">
+                <span class="mr-2">📍</span> Starta GPS
+            </button>
+
+            <div id="map" class="cursor-crosshair"></div>
+        </div>
+
+        <!-- SIDOPANELER -->
+        
+        <!-- GCP (Punkter) -->
+        <div id="gcpPanel" class="absolute right-0 top-0 bottom-0 w-80 bg-slate-800 text-white shadow-[0_0_20px_rgba(0,0,0,0.5)] z-[2000] transform translate-x-full transition-transform duration-300 flex flex-col border-l border-slate-700">
+            <div class="p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center">
+                <div><h2 class="font-bold text-lg text-orange-400">Dina Punkter</h2><p class="text-xs text-slate-400">Minst 3 krävs</p></div>
+                <button id="closeGcpPanelBtn" class="text-slate-400 hover:text-white text-xl p-2">✕</button>
+            </div>
+            <div id="gcpListContainer" class="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-800"></div>
+        </div>
+
+        <!-- NYTT: Mitt Arkiv -->
+        <div id="archivePanel" class="absolute left-0 top-0 bottom-0 w-80 bg-slate-800 text-white shadow-[0_0_20px_rgba(0,0,0,0.5)] z-[2000] transform -translate-x-full transition-transform duration-300 flex flex-col border-r border-slate-700">
+            <div class="p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center">
+                <div><h2 class="font-bold text-lg text-blue-400">Mitt Arkiv</h2><p class="text-xs text-slate-400">Dina sparade kartor</p></div>
+                <button id="closeArchiveBtn" class="text-slate-400 hover:text-white text-xl p-2">✕</button>
+            </div>
+            <div id="archiveListContainer" class="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-800">
+                <!-- Fylls med sparade kartor via JS -->
+            </div>
+        </div>
+
+        <!-- NYTT: Flygfoto (STAC-bild, interimslösning - välj en specifik flygbild) -->
+        <div id="stacPanel" class="absolute right-0 top-0 bottom-0 w-80 bg-slate-800 text-white shadow-[0_0_20px_rgba(0,0,0,0.5)] z-[2000] transform translate-x-full transition-transform duration-300 flex flex-col border-l border-slate-700">
+            <div class="p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center">
+                <div><h2 class="font-bold text-lg text-teal-400">Flygfoto (Lantmäteriet)</h2><p class="text-xs text-slate-400">Sök i det synliga kartområdet</p></div>
+                <button id="closeStacPanelBtn" class="text-slate-400 hover:text-white text-xl p-2">✕</button>
+            </div>
+            <div class="p-4 border-b border-slate-700 space-y-2">
+                <button id="stacSearchBtn" class="w-full bg-teal-600 hover:bg-teal-500 text-white font-bold py-2 rounded text-sm transition">
+                    🔍 Sök flygfoton här
+                </button>
+                <button id="stacRemoveBtn" class="w-full bg-slate-700 hover:bg-slate-600 text-white font-semibold py-1.5 rounded text-sm transition hidden">
+                    🗑️ Ta bort flygfoto
+                </button>
+            </div>
+            <div id="stacResultsContainer" class="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-800">
+                <p class="text-slate-400 text-sm italic text-center mt-4">Panorera/zooma till önskat område till höger och klicka "Sök flygfoton här".</p>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- NYTT: Inloggnings-Modal -->
+    <div id="authModal" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-[5000] flex justify-center items-center hidden">
+        <div class="bg-slate-800 p-8 rounded-lg shadow-2xl w-96 border border-slate-600">
+            <h2 id="authTitle" class="text-2xl text-orange-400 font-bold mb-4">Fornkompassen Arkiv</h2>
+
+            <!-- Logga in / Skapa konto -->
+            <div id="authLoginView">
+                <input type="email" id="authEmail" placeholder="Din e-postadress" class="w-full p-3 mb-3 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-orange-500">
+                <input type="password" id="authPassword" placeholder="Lösenord" class="w-full p-3 mb-2 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-orange-500">
+                <button id="showForgotPasswordBtn" class="text-xs text-slate-400 hover:text-orange-400 mb-3 block">Glömt lösenord?</button>
+
+                <div class="flex space-x-2">
+                    <button id="doLoginBtn" class="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 rounded transition">Logga in</button>
+                    <button id="doRegisterBtn" class="flex-1 bg-slate-600 hover:bg-slate-500 text-white font-bold py-2 rounded transition">Skapa konto</button>
+                </div>
+            </div>
+
+            <!-- Glömt lösenord: skicka återställningslänk -->
+            <div id="authForgotView" class="hidden">
+                <input type="email" id="forgotEmail" placeholder="Din e-postadress" class="w-full p-3 mb-3 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-orange-500">
+                <button id="sendResetLinkBtn" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 rounded transition mb-2">Skicka återställningslänk</button>
+                <button id="backToLoginBtn" class="text-xs text-slate-400 hover:text-white w-full text-center">← Tillbaka till inloggning</button>
+            </div>
+
+            <!-- Efter klick på återställningslänk i mejlet: sätt nytt lösenord -->
+            <div id="authNewPasswordView" class="hidden">
+                <input type="password" id="newPassword" placeholder="Nytt lösenord" class="w-full p-3 mb-3 bg-slate-700 text-white rounded border border-slate-600 focus:outline-none focus:border-orange-500">
+                <button id="saveNewPasswordBtn" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 rounded transition">Spara nytt lösenord</button>
+            </div>
+
+            <button id="closeAuthBtn" class="mt-6 text-sm text-slate-400 hover:text-white w-full text-center">Avbryt</button>
+        </div>
+    </div>
+
+    <!-- Laddningsskärm & Toast -->
+    <div id="globalLoader" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[6000] flex flex-col justify-center items-center text-white hidden">
+        <div class="loader-spinner mb-4"></div>
+        <h2 id="loaderTitle" class="text-xl font-bold mb-2">Laddar...</h2>
+        <p id="loaderText" class="text-slate-300 text-sm max-w-md text-center">Detta kan ta en stund beroende på filens storlek.</p>
+    </div>
+    <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 text-white px-6 py-4 rounded shadow-2xl transition-opacity duration-300 opacity-0 pointer-events-none z-[7000] border-l-4 border-orange-500 max-w-sm"></div>
+
+    <script>
+        const API_BASE = "http://localhost:8000";
+
+        // ==========================================
+        // DINA SUPABASE NYCKLAR HÄR!
+        // ==========================================
+        const SUPABASE_URL = "https://eqdsdovqrpccnavdsyup.supabase.co"; 
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxZHNkb3ZxcnBjY25hdmRzeXVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMzg1NjIsImV4cCI6MjA5NzkxNDU2Mn0.IF-m5sADeOfLtHYgN5XDWn1dwB4I4WsMSkKZtZkBoPo";
+        
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        function showToast(msg, duration = 4000) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.classList.remove('opacity-0');
+            setTimeout(() => t.classList.add('opacity-0'), duration);
+        }
+
+        // ==========================================
+        // MODUL 1: STATE OCH AUTH
+        // ==========================================
+        const State = {
+            session: null, // Håller koll på inloggningen
+            
+            gcpData: [], currentMarkerNumber: 1, currentMapId: null, isLoadingMap: false,
+            pending: { source: null, pixel: null, latlng: null },
+            tempLeftMarker: null, tempRightMarker: null,
+            previousOpacity: undefined, isTracking: false, gpsMarker: null, gpsCircle: null,
+            leftImageSrc: null, leftImageW: 0, leftImageH: 0,
+            isSwipeMode: false, isLoupeActive: false, swipeVal: 0.5,
+
+            resetPending: () => {
+                State.pending = { source: null, pixel: null, latlng: null };
+                UI.hideBanner();
+                if(State.tempLeftMarker) { Maps.left.removeLayer(State.tempLeftMarker); State.tempLeftMarker = null; }
+                if(State.tempRightMarker) { Maps.right.removeLayer(State.tempRightMarker); State.tempRightMarker = null; }
+                if (State.previousOpacity !== undefined && Maps.geoTiffLayer && !State.isSwipeMode) {
+                    Maps.geoTiffLayer.setOpacity(State.previousOpacity);
+                    document.getElementById('opacitySlider').value = State.previousOpacity;
+                    State.previousOpacity = undefined;
+                }
+            },
+            addGCPPair: () => { State.gcpData.push({ pixel: State.pending.pixel, latlng: State.pending.latlng }); State.resetPending(); State.renderAllMarkers(); State.markAsDirty(); },
+            updateGCPPair: (index, newCoords, side) => { if (side === 'left') State.gcpData[index].pixel = newCoords; else State.gcpData[index].latlng = newCoords; UI.updateSaveButton(); },
+            removeGCPPair: (index) => { State.gcpData.splice(index, 1); State.renderAllMarkers(); },
+            markAsDirty: () => { if (Maps.geoTiffLayer) { UI.updateSaveButton(true); showToast("Ändring upptäckt! Klicka på 'Uppdatera karta' när du är färdig.", 4000); } },
+            renderAllMarkers: () => {
+                Maps.leftMarkersLayer.clearLayers(); Maps.rightMarkersLayer.clearLayers();
+                Maps.markersLeftStore = {}; Maps.markersRightStore = {};
+                State.gcpData.forEach((pair, index) => {
+                    const number = index + 1;
+                    UI.drawPermanentMarker(Maps.left, pair.pixel, number, 'left', index);
+                    UI.drawPermanentMarker(Maps.right, pair.latlng, number, 'right', index);
+                });
+                State.currentMarkerNumber = State.gcpData.length + 1;
+                UI.updateSaveButton(); UI.renderGCPList();
+            }
+        };
+
+        // ==========================================
+        // AUTH & MITT ARKIV
+        // ==========================================
+        const AuthLogic = {
+            init: () => {
+                // Supabase-klienten läser av ett ev. recovery-token i URL:en direkt när den
+                // skapas (mycket tidigare i sidladdningen än denna init()-funktion körs),
+                // så PASSWORD_RECOVERY-eventet kan redan ha avfyrats innan onAuthStateChange
+                // nedan hinner registreras. Kolla därför URL:en direkt också, som ett skydd
+                // mot den kapplöpningen.
+                if (window.location.hash.includes('type=recovery')) {
+                    AuthLogic.showView('new-password');
+                    document.getElementById('authModal').classList.remove('hidden');
+                }
+
+                // Lyssna på inloggning/utloggning
+                supabaseClient.auth.onAuthStateChange((event, session) => {
+                    // PASSWORD_RECOVERY: användaren klickade på återställningslänken i mejlet -
+                    // Supabase loggar in dem tillfälligt med en recovery-session. Visa "sätt
+                    // nytt lösenord"-vyn istället för att bete oss som en vanlig inloggning.
+                    if (event === 'PASSWORD_RECOVERY') {
+                        AuthLogic.showView('new-password');
+                        document.getElementById('authModal').classList.remove('hidden');
+                        return;
+                    }
+
+                    State.session = session;
+                    const authBtn = document.getElementById('authBtn');
+                    const arcBtn = document.getElementById('toggleArchiveBtn');
+
+                    if (session) {
+                        authBtn.innerHTML = '<span>🚪 Logga ut</span>';
+                        arcBtn.classList.remove('hidden');
+                        AuthLogic.fetchArchive(); // Hämta kartor när vi loggar in!
+                    } else {
+                        authBtn.innerHTML = '<span>🔑 Logga in</span>';
+                        arcBtn.classList.add('hidden');
+                        document.getElementById('archiveListContainer').innerHTML = '';
+                    }
+                });
+
+                document.getElementById('authBtn').addEventListener('click', async () => {
+                    if (State.session) {
+                        await supabaseClient.auth.signOut();
+                        showToast("Du har loggats ut.");
+                    } else {
+                        AuthLogic.showView('login');
+                        document.getElementById('authModal').classList.remove('hidden');
+                    }
+                });
+
+                document.getElementById('closeAuthBtn').addEventListener('click', () => document.getElementById('authModal').classList.add('hidden'));
+
+                document.getElementById('doLoginBtn').addEventListener('click', async () => {
+                    const email = document.getElementById('authEmail').value;
+                    const password = document.getElementById('authPassword').value;
+                    UI.showLoader("Loggar in...", "Verifierar uppgifter...");
+                    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+                    UI.hideLoader();
+                    if(error) showToast("Fel vid inloggning: " + error.message);
+                    else { document.getElementById('authModal').classList.add('hidden'); showToast("Välkommen tillbaka!"); }
+                });
+
+                document.getElementById('doRegisterBtn').addEventListener('click', async () => {
+                    const email = document.getElementById('authEmail').value;
+                    const password = document.getElementById('authPassword').value;
+                    UI.showLoader("Skapar konto...", "Vänta lite...");
+                    const { data, error } = await supabaseClient.auth.signUp({ email, password });
+                    UI.hideLoader();
+                    if(error) { showToast("Fel vid registrering: " + error.message); return; }
+                    // Om e-postbekräftelse krävs (rekommenderat i produktion) skapas kontot,
+                    // men data.session är null tills användaren klickat på länken i mejlet -
+                    // då är de INTE redan inloggade, så vi ska inte påstå det.
+                    if (!data.session) {
+                        document.getElementById('authModal').classList.add('hidden');
+                        showToast("Konto skapat! Kolla din e-post och klicka på bekräftelselänken innan du loggar in.", 7000);
+                    } else {
+                        document.getElementById('authModal').classList.add('hidden');
+                        showToast("Konto skapat! Du är nu inloggad.");
+                    }
+                });
+
+                document.getElementById('showForgotPasswordBtn').addEventListener('click', () => {
+                    document.getElementById('forgotEmail').value = document.getElementById('authEmail').value;
+                    AuthLogic.showView('forgot');
+                });
+                document.getElementById('backToLoginBtn').addEventListener('click', () => AuthLogic.showView('login'));
+
+                document.getElementById('sendResetLinkBtn').addEventListener('click', async () => {
+                    const email = document.getElementById('forgotEmail').value;
+                    if (!email) return showToast("Ange din e-postadress först.");
+                    UI.showLoader("Skickar...", "Skickar återställningslänk...");
+                    const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: window.location.href.split('#')[0] });
+                    UI.hideLoader();
+                    if (error) showToast("Kunde inte skicka återställningslänk: " + error.message);
+                    else {
+                        document.getElementById('authModal').classList.add('hidden');
+                        showToast("Om kontot finns har ett återställningsmejl skickats - kolla din inkorg.", 7000);
+                    }
+                });
+
+                document.getElementById('saveNewPasswordBtn').addEventListener('click', async () => {
+                    const password = document.getElementById('newPassword').value;
+                    if (!password || password.length < 6) return showToast("Lösenordet måste vara minst 6 tecken.");
+                    UI.showLoader("Sparar...", "Uppdaterar lösenord...");
+                    const { error } = await supabaseClient.auth.updateUser({ password });
+                    UI.hideLoader();
+                    if (error) showToast("Kunde inte spara nytt lösenord: " + error.message);
+                    else {
+                        document.getElementById('authModal').classList.add('hidden');
+                        showToast("Nytt lösenord sparat! Du är nu inloggad.");
+                    }
+                });
+            },
+
+            showView: (view) => {
+                document.getElementById('authLoginView').classList.toggle('hidden', view !== 'login');
+                document.getElementById('authForgotView').classList.toggle('hidden', view !== 'forgot');
+                document.getElementById('authNewPasswordView').classList.toggle('hidden', view !== 'new-password');
+                const titles = { login: 'Fornkompassen Arkiv', forgot: 'Återställ lösenord', 'new-password': 'Välj nytt lösenord' };
+                document.getElementById('authTitle').innerText = titles[view];
+            },
+
+            fetchArchive: async () => {
+                if(!State.session) return;
+                const { data, error } = await supabaseClient.from('historical_maps').select('*').order('created_at', { ascending: false });
+                
+                const container = document.getElementById('archiveListContainer');
+                if (error || !data || data.length === 0) {
+                    container.innerHTML = `<p class="text-slate-400 text-sm italic text-center mt-4">Ditt arkiv är tomt.</p>`;
+                    return;
+                }
+
+                container.innerHTML = '';
+                data.forEach(map => {
+                    const date = new Date(map.created_at).toLocaleDateString('sv-SE');
+                    const canEdit = !!map.original_image_url;
+                    const div = document.createElement('div');
+                    div.className = "bg-slate-700 p-3 rounded shadow border border-slate-600 flex flex-col";
+                    div.innerHTML = `
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="font-bold text-sm text-blue-300 truncate pr-2">${map.name}</h3>
+                            <div class="flex items-center space-x-1 flex-shrink-0">
+                                <button class="text-slate-400 hover:text-orange-400 rename-map-btn" title="Byt namn">🏷️</button>
+                                <button class="text-slate-400 hover:text-red-400 delete-map-btn" title="Radera">🗑️</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-slate-400 mb-3">Sparad: ${date}</p>
+                        <div class="flex flex-col space-y-2">
+                            <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-1.5 rounded text-sm transition open-map-btn">
+                                Öppna på kartan
+                            </button>
+                            <div class="flex space-x-2">
+                                <button class="flex-1 text-white font-bold py-1.5 rounded text-sm transition edit-map-btn ${canEdit ? 'bg-orange-500 hover:bg-orange-400 cursor-pointer' : 'bg-slate-600 opacity-40 cursor-not-allowed'}" ${canEdit ? '' : 'disabled title="Ingen originalbild sparad för denna karta - kan ej redigeras"'}>
+                                    ✏️ Redigera
+                                </button>
+                                <button class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-1.5 rounded text-sm transition background-map-btn" title="Använd denna karta som referens till höger, medan du passar in en ny bild till vänster">
+                                    🗺️ Bakgrund
+                                </button>
+                            </div>
+                        </div>
+                    `;
+
+                    div.querySelector('.delete-map-btn').addEventListener('click', async () => {
+                        if(confirm(`Är du säker på att du vill radera "${map.name}"?`)){
+                            await supabaseClient.from('historical_maps').delete().eq('id', map.id);
+                            AuthLogic.fetchArchive();
+                        }
+                    });
+
+                    div.querySelector('.rename-map-btn').addEventListener('click', async () => {
+                        const newName = prompt("Nytt namn för kartan:", map.name);
+                        if (newName && newName.trim() && newName.trim() !== map.name) {
+                            const { error } = await supabaseClient.from('historical_maps').update({ name: newName.trim() }).eq('id', map.id);
+                            if (error) showToast("Kunde inte byta namn: " + error.message);
+                            else { showToast("Namn uppdaterat!"); AuthLogic.fetchArchive(); }
+                        }
+                    });
+
+                    div.querySelector('.open-map-btn').addEventListener('click', () => {
+                        // FÄLTLÄGE: Dölj uppladdningsrutan och expandera kartan till 100%!
+                        document.getElementById('archivePanel').classList.add('-translate-x-full');
+                        document.getElementById('imageContainerWrapper').classList.add('hidden');
+                        document.getElementById('rightMapWrapper').classList.remove('w-1/2');
+                        document.getElementById('rightMapWrapper').classList.add('w-full');
+
+                        setTimeout(() => { Maps.right.invalidateSize(); }, 300); // Låt animationen gå klart
+
+                        UI.renderGeoTiff(map.georeferenced_url);
+                        document.getElementById('closeArchiveMapBtn').classList.remove('hidden');
+                    });
+
+                    const editBtn = div.querySelector('.edit-map-btn');
+                    if (map.original_image_url) {
+                        editBtn.addEventListener('click', () => AuthLogic.editMap(map));
+                    }
+
+                    div.querySelector('.background-map-btn').addEventListener('click', () => AuthLogic.useAsBackground(map));
+
+                    container.appendChild(div);
+                });
+            },
+
+            editMap: async (map) => {
+                if (State.isLoadingMap) return; // Förhindra att två redigerings-flöden körs samtidigt och krockar
+                State.isLoadingMap = true;
+
+                // Återgå från ev. fältläge till delad 50/50-vy
+                document.getElementById('archivePanel').classList.add('-translate-x-full');
+                document.getElementById('imageContainerWrapper').classList.remove('hidden');
+                document.getElementById('rightMapWrapper').classList.remove('w-full');
+                document.getElementById('rightMapWrapper').classList.add('w-1/2');
+                document.getElementById('closeArchiveMapBtn').classList.add('hidden');
+                setTimeout(() => { Maps.right.invalidateSize(); Maps.left.invalidateSize(); }, 300);
+
+                // Städa bort ALLT från en ev. tidigare karta innan den nya laddas in,
+                // så gamla punkter/bilder/overlay aldrig kan bli kvar samtidigt som den nya.
+                State.gcpData = [];
+                State.renderAllMarkers();
+                if (Maps.imageOverlay) { Maps.left.removeLayer(Maps.imageOverlay); Maps.imageOverlay = null; }
+                if (Maps.geoTiffLayer) { Maps.right.removeLayer(Maps.geoTiffLayer); Maps.geoTiffLayer = null; document.getElementById('opacityControl').classList.add('hidden'); }
+                State.currentMapId = null;
+
+                UI.showLoader("Öppnar karta för redigering...", "Hämtar originalbilden...");
+                try {
+                    const res = await fetch(map.original_image_url);
+                    if (!res.ok) throw new Error("Kunde inte hämta originalbilden.");
+                    const blob = await res.blob();
+                    const filename = map.original_image_url.split('/').pop().split('?')[0];
+                    const file = new File([blob], filename, { type: blob.type });
+
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    const input = document.getElementById('imageUpload');
+                    input.files = dt.files;
+
+                    await UI.handleImageUpload({ target: input });
+
+                    State.gcpData = map.gcp_json || [];
+                    State.renderAllMarkers();
+                    State.currentMapId = map.id;
+
+                    await UI.renderGeoTiff(map.georeferenced_url);
+
+                    showToast(`Redigerar "${map.name}" - lägg till fler punkter och klicka på Uppdatera Inpassning.`, 5000);
+                } catch (err) {
+                    showToast("Kunde inte öppna kartan för redigering: " + err.message);
+                } finally {
+                    UI.hideLoader();
+                    State.isLoadingMap = false;
+                }
+            },
+
+            useAsBackground: (map) => {
+                // Återgå från ev. fältläge till delad 50/50-vy - vänsterpanelen ska vara fri
+                // för att ladda upp en NY bild (t.ex. en historisk karta) att passa in.
+                document.getElementById('archivePanel').classList.add('-translate-x-full');
+                document.getElementById('imageContainerWrapper').classList.remove('hidden');
+                document.getElementById('rightMapWrapper').classList.remove('w-full');
+                document.getElementById('rightMapWrapper').classList.add('w-1/2');
+                document.getElementById('closeArchiveMapBtn').classList.add('hidden');
+                setTimeout(() => { Maps.right.invalidateSize(); Maps.left.invalidateSize(); }, 300);
+
+                // Detta är INTE samma sak som att redigera "map" - vi startar en helt ny
+                // inpassning (av en annan bild) med denna karta som referens i bakgrunden,
+                // så gamla punkter/bild och kopplingen till "map" som aktiv arkiv-post rensas.
+                State.gcpData = [];
+                State.renderAllMarkers();
+                State.currentMapId = null;
+                if (Maps.imageOverlay) { Maps.left.removeLayer(Maps.imageOverlay); Maps.imageOverlay = null; }
+                if (Maps.geoTiffLayer) { Maps.right.removeLayer(Maps.geoTiffLayer); Maps.geoTiffLayer = null; document.getElementById('opacityControl').classList.add('hidden'); }
+                document.getElementById('leftMap').classList.add('hidden');
+                document.getElementById('uploadPrompt').classList.remove('hidden');
+
+                // En bakgrundskarta (t.ex. fastighetskartan) läggs till som ett EGET,
+                // kryssbart lager i kartväljaren uppe till höger - separat från
+                // Maps.geoTiffLayer (den historiska karta som just nu aktivt passas in).
+                // Så kan man visa/dölja flera kartor samtidigt istället för att den ena
+                // alltid skriver över den andra.
+                UI.addBackgroundLayer(map.id, map.name, map.georeferenced_url);
+                showToast(`"${map.name}" visas nu till höger som referenskarta (kryssbar i kartväljaren) - ladda upp en ny bild till vänster och passa in den mot denna.`, 6000);
+            }
+        };
+
+        // ==========================================
+        // FLYGFOTO (Lantmäteriet STAC-bild) - INTERIMSLÖSNING
+        // ==========================================
+        // STAC-bild är en KATALOG av enskilda flygbilder (stora COG-filer), inte ett
+        // sömlöst panorerbart kartlager. Man söker fram en specifik bild som täcker
+        // det man tittar på just nu, och lägger ut den som ett eget lager - separat
+        // från Maps.geoTiffLayer (som är reserverat för den historiska kartan som
+        // aktivt hålls på att passas in).
+        const StacLogic = {
+            currentItems: [], isLoadingItem: false, // flygfoto är alltid ETT enskilt lager, till skillnad från "Bakgrund" som får vara flera
+
+            search: async () => {
+                if (!State.session) { document.getElementById('stacPanel').classList.add('translate-x-full'); return UI.requireLogin("Logga in för att kunna söka flygfoton."); }
+                const container = document.getElementById('stacResultsContainer');
+                container.innerHTML = `<p class="text-slate-400 text-sm italic text-center mt-4">Söker...</p>`;
+                try {
+                    const b = Maps.right.getBounds();
+                    const bbox = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+                    // Hämtar fler råträffar än vi visar (limit=40), eftersom samma geografiska
+                    // ruta ofta finns i flera år/kollektioner - vi rensar bort dubbletter
+                    // och sorterar på relevans nedan innan vi visar en kortare, renare lista.
+                    const url = `${API_BASE}/api/lantmateriet/stac-bild/search?bbox=${encodeURIComponent(bbox)}&limit=40&sortby=-datetime`;
+                    const res = await fetch(url, { headers: { Authorization: `Bearer ${State.session.access_token}` } });
+                    if (!res.ok) throw new Error("Kunde inte söka i Lantmäteriets flygfotoarkiv.");
+                    const data = await res.json();
+                    StacLogic.currentItems = StacLogic.refineResults(data.features || []);
+                    StacLogic.renderResults();
+                } catch (err) {
+                    container.innerHTML = `<p class="text-red-400 text-sm text-center mt-4">${err.message}</p>`;
+                }
+            },
+
+            // Rensar bort dubbletter (samma geografiska ruta men äldre år - vi behåller
+            // bara den senaste) och prioriterar sedan de mest högupplösta/precisa träffarna
+            // (minst bbox-area) högst upp, istället för att blanda in stora, lågupplösta
+            // rikstäckande rutor som visuellt inte känns "från platsen man tittar på".
+            refineResults: (features) => {
+                const bboxArea = (bbox) => (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]);
+                const footprintKey = (bbox) => bbox.map(n => n.toFixed(3)).join(',');
+
+                const newestPerFootprint = new Map();
+                for (const f of features) {
+                    if (!f.bbox) continue;
+                    const key = footprintKey(f.bbox);
+                    const existing = newestPerFootprint.get(key);
+                    if (!existing || (f.properties?.datetime || '') > (existing.properties?.datetime || '')) {
+                        newestPerFootprint.set(key, f);
+                    }
+                }
+
+                return [...newestPerFootprint.values()].sort((a, b) => bboxArea(a.bbox) - bboxArea(b.bbox));
+            },
+
+            renderResults: () => {
+                const container = document.getElementById('stacResultsContainer');
+                if (StacLogic.currentItems.length === 0) {
+                    container.innerHTML = `<p class="text-slate-400 text-sm italic text-center mt-4">Inga flygfoton hittades i detta område. Prova att zooma ut eller flytta kartan.</p>`;
+                    return;
+                }
+                container.innerHTML = '';
+                StacLogic.currentItems.forEach(item => {
+                    const thumb = item.assets && item.assets.thumbnail ? item.assets.thumbnail.href : null;
+                    const sizeMb = item.assets && item.assets.data && item.assets.data['file:size'] ? Math.round(item.assets.data['file:size'] / 1e6) : '?';
+                    const year = item.properties && item.properties.datetime ? item.properties.datetime.slice(0, 4) : '?';
+                    const div = document.createElement('div');
+                    div.className = "bg-slate-700 rounded shadow border border-slate-600 overflow-hidden cursor-pointer hover:border-teal-400 transition relative";
+                    div.innerHTML = `
+                        <div class="relative">
+                            ${thumb ? `<img src="${thumb}" class="w-full h-24 object-cover" loading="lazy">` : ''}
+                            <span class="absolute top-1 right-1 bg-slate-900/90 text-teal-300 text-xs font-bold px-2 py-0.5 rounded">${year}</span>
+                        </div>
+                        <div class="p-2">
+                            <p class="text-xs font-bold text-teal-300 truncate">${item.id}</p>
+                            <p class="text-[10px] text-slate-400">${sizeMb} MB</p>
+                        </div>
+                    `;
+                    div.addEventListener('click', () => StacLogic.loadItem(item));
+                    container.appendChild(div);
+                });
+            },
+
+            loadItem: async (item) => {
+                // Skydd mot kapplöpning: om man klickar på ett nytt flygfoto innan det
+                // förra hunnit ladda klart (kan ta många sekunder för de stora filerna)
+                // hinner Maps.stacLayer inte sättas än, så det gamla lagret skulle annars
+                // aldrig hittas och tas bort - och bli kvar för alltid på kartan.
+                if (StacLogic.isLoadingItem) return showToast("Vänta tills föregående flygfoto har laddat klart...");
+                if (!State.session) return UI.requireLogin("Logga in för att kunna ladda flygfoton.");
+                const asset = item.assets && item.assets.data;
+                if (!asset || !asset.href) return showToast("Ingen bildfil hittades för detta objekt.");
+                StacLogic.isLoadingItem = true;
+                UI.showLoader("Laddar flygfoto...", `Hämtar ${item.id} (kan ta en stund för stora filer)...`);
+                try {
+                    if (Maps.stacLayer) { Maps.right.removeLayer(Maps.stacLayer); Maps.stacLayer = null; }
+                    // URL-läge (inte fetch+arrayBuffer): parseGeoraster läser filen via HTTP
+                    // range-requests, så vi laddar bara ner de delar som faktiskt syns -
+                    // dessa COG-filer kan vara flera hundra MB. Går via vår egen fil-proxy
+                    // (inte direkt mot Lantmäteriet) eftersom filen kräver Bearer-token som
+                    // aldrig ska nå webbläsaren.
+                    const proxiedUrl = `${API_BASE}/api/lantmateriet-file?url=${encodeURIComponent(asset.href)}&supabase_token=${encodeURIComponent(State.session.access_token)}`;
+                    const raster = await parseGeoraster(proxiedUrl);
+                    // Återanvänd samma byggfunktion som bakgrundskartorna - keepBuffer och
+                    // updateWhenZooming:false håller fler tiles i cache och undviker
+                    // omritning mitt i en zoom-animation, vilket annars gav hack/avbrott
+                    // när flera lager var aktiva samtidigt.
+                    const layer = UI.buildGeoRasterLayer(raster, 1.0, 350);
+                    layer.addTo(Maps.right);
+                    Maps.stacLayer = layer;
+                    const year = item.properties && item.properties.datetime ? item.properties.datetime.slice(0, 4) : '?';
+                    document.getElementById('stacRemoveBtn').classList.remove('hidden');
+                    document.getElementById('stacRemoveBtn').innerHTML = `🗑️ Ta bort flygfoto (${year})`;
+                    showToast(`Flygfoto "${item.id}" (${year}) inlagt.`, 4000);
+                } catch (err) {
+                    showToast("Kunde inte ladda flygfotot: " + err.message);
+                } finally {
+                    UI.hideLoader();
+                    StacLogic.isLoadingItem = false;
+                }
+            },
+
+            removeLayer: () => {
+                if (Maps.stacLayer) { Maps.right.removeLayer(Maps.stacLayer); Maps.stacLayer = null; }
+                document.getElementById('stacRemoveBtn').classList.add('hidden');
+                document.getElementById('stacRemoveBtn').innerHTML = '🗑️ Ta bort flygfoto';
+                showToast("Flygfoto borttaget.");
+            }
+        };
+
+        // ==========================================
+        // MODUL 2: KARTOR OCH LAGER
+        // ==========================================
+        const Maps = {
+            left: null, right: null, leftMarkersLayer: L.layerGroup(), rightMarkersLayer: L.layerGroup(),
+            markersLeftStore: {}, markersRightStore: {}, imageOverlay: null, currentImageBounds: null, geoTiffLayer: null, stacLayer: null,
+            layersControl: null, backgroundLayers: {}, // backgroundLayers: id -> { layer, name } - kryssbara referenskartor, oberoende av den aktiva inpassningen 
+
+            updateSwipeClip: () => {
+                if (!State.isSwipeMode || !Maps.geoTiffLayer) return;
+                const map = Maps.right; const size = map.getSize(); const splitX = size.x * State.swipeVal;
+                const nw = map.containerPointToLayerPoint([0, 0]); const se = map.containerPointToLayerPoint(size);
+                const splitPoint = map.containerPointToLayerPoint([splitX, 0]);
+                const container = Maps.geoTiffLayer.getContainer();
+                if (container) { container.style.clipPath = `polygon(${nw.x}px ${nw.y}px, ${splitPoint.x}px ${nw.y}px, ${splitPoint.x}px ${se.y}px, ${nw.x}px ${se.y}px)`; }
+            },
+
+            init: () => {
+                Maps.left = L.map('leftMap', { crs: L.CRS.Simple, minZoom: -3, maxZoom: 4, attributionControl: false });
+                Maps.leftMarkersLayer.addTo(Maps.left);
+
+                Maps.right = L.map('map').setView([57.666, 15.855], 10);
+                Maps.rightMarkersLayer.addTo(Maps.right);
+
+                const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM', maxZoom: 19 });
+                const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenTopoMap', maxZoom: 17 });
+                const googleSatLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { attribution: '&copy; Google', maxZoom: 20 });
+                const googleMapLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { attribution: '&copy; Google', maxZoom: 20 });
+                
+                const fornlamningarLayer = L.tileLayer.wms('https://pub.raa.se/visning/lamningar_v1/wms', { layers: 'lamningar_v1:fornlamning', format: 'image/png', transparent: true, version: '1.3.0', attribution: '&copy; RAÄ' });
+
+                topoLayer.addTo(Maps.right);
+                Maps.layersControl = L.control.layers({"Terräng & Höjdkurvor": topoLayer, "Google Satellit": googleSatLayer, "Standard Karta (OSM)": osmLayer, "Google Karta": googleMapLayer}, { "Visa Fornlämningar (RAÄ)": fornlamningarLayer }).addTo(Maps.right);
+
+                Maps.left.on('click', Handlers.onLeftClick); Maps.right.on('click', Handlers.onRightClick);
+                Maps.left.on('mousemove', Handlers.onLeftMouseMove); Maps.left.on('mouseout', () => document.getElementById('loupe').style.display = 'none');
+
+                Maps.right.on('locationfound', (e) => {
+                    const radius = e.accuracy / 2;
+                    if (!State.gpsMarker) {
+                        State.gpsMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#3b82f6", color: "#ffffff", weight: 3, opacity: 1, fillOpacity: 1 }).addTo(Maps.right);
+                        State.gpsCircle = L.circle(e.latlng, radius, { color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.15, weight: 1 }).addTo(Maps.right);
+                    } else { State.gpsMarker.setLatLng(e.latlng); State.gpsCircle.setLatLng(e.latlng); State.gpsCircle.setRadius(radius); }
+                });
+                Maps.right.on('locationerror', () => {
+                    showToast("Kunde inte hämta GPS-position.");
+                    const btn = document.getElementById('gpsBtn'); btn.innerHTML = '<span class="mr-2">📍</span> Starta GPS'; btn.classList.replace('bg-red-50', 'bg-white'); btn.classList.replace('text-red-700', 'text-slate-700'); State.isTracking = false;
+                });
+
+                Maps.right.on('move', Maps.updateSwipeClip); Maps.right.on('zoom', Maps.updateSwipeClip); Maps.right.on('resize', Maps.updateSwipeClip);
+            }
+        };
+
+        // ==========================================
+        // MODUL 3: HÄNDELSEHANTERARE
+        // ==========================================
+        const Handlers = {
+            onLeftClick: (e) => {
+                const pixelX = Math.round(e.latlng.lng); const pixelY = Math.round(-e.latlng.lat);
+                if (!Maps.currentImageBounds || pixelX < 0 || pixelY < 0 || pixelX > Maps.currentImageBounds[1][1] || pixelY > -Maps.currentImageBounds[0][0]) return;
+                if (State.pending.source === 'right') { State.pending.pixel = [pixelX, pixelY]; State.addGCPPair(); } 
+                else {
+                    State.pending.source = 'left'; State.pending.pixel = [pixelX, pixelY];
+                    UI.drawPendingMarker(Maps.left, e.latlng, 'left'); UI.showBanner("Klicka på motsvarande punkt i kartan till höger!");
+                    if (Maps.geoTiffLayer && !State.isSwipeMode) {
+                        if (State.previousOpacity === undefined) State.previousOpacity = parseFloat(document.getElementById('opacitySlider').value);
+                        Maps.geoTiffLayer.setOpacity(0.2); document.getElementById('opacitySlider').value = 0.2;
+                    }
+                }
+            },
+            onRightClick: (e) => {
+                const latlngPair = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];
+                if (State.pending.source === 'left') { State.pending.latlng = latlngPair; State.addGCPPair(); } 
+                else {
+                    if(document.getElementById('leftMap').classList.contains('hidden')) { Handlers.fetchFornlamningInfo(e.latlng); return; }
+                    State.pending.source = 'right'; State.pending.latlng = latlngPair;
+                    UI.drawPendingMarker(Maps.right, e.latlng, 'right'); UI.showBanner("Klicka på motsvarande punkt i bilden till vänster!");
+                    Handlers.fetchFornlamningInfo(e.latlng);
+                }
+            },
+            onLeftMouseMove: (e) => {
+                if (!State.isLoupeActive || !State.leftImageSrc) { document.getElementById('loupe').style.display = 'none'; return; }
+                const loupe = document.getElementById('loupe'); loupe.style.display = 'block';
+                const pt = Maps.left.latLngToContainerPoint(e.latlng); loupe.style.left = (pt.x - 80) + 'px'; loupe.style.top = (pt.y - 80) + 'px';
+                const bounds = Maps.currentImageBounds; const width = bounds[1][1]; const height = Math.abs(bounds[0][0]);
+                let pctX = Math.max(0, Math.min(1, e.latlng.lng / width)); let pctY = Math.max(0, Math.min(1, Math.abs(e.latlng.lat) / height));
+                const currentPixelWidth = width * Math.pow(2, Maps.left.getZoom()); const currentPixelHeight = height * Math.pow(2, Maps.left.getZoom());
+                loupe.style.backgroundImage = `url(${State.leftImageSrc})`; loupe.style.backgroundSize = `${currentPixelWidth * 2}px ${currentPixelHeight * 2}px`; loupe.style.backgroundPosition = `${pctX * 100}% ${pctY * 100}%`;
+            },
+            fetchFornlamningInfo: async (latlng) => {
+                let isRaaActive = false; Maps.right.eachLayer((layer) => { if (layer.options && layer.options.attribution && layer.options.attribution.includes('RAÄ')) isRaaActive = true; });
+                if(!isRaaActive) return;
+                showToast("Söker i RAÄ:s arkiv...", 2000);
+                try {
+                    const map = Maps.right; const point = map.latLngToContainerPoint(latlng, map.getZoom());
+                    const size = map.getSize(); const bounds = map.getBounds(); const sw = bounds.getSouthWest(); const ne = bounds.getNorthEast();
+                    const url = `https://pub.raa.se/visning/lamningar_v1/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&BBOX=${sw.lat},${sw.lng},${ne.lat},${ne.lng}&CRS=EPSG:4326&WIDTH=${size.x}&HEIGHT=${size.y}&LAYERS=lamningar_v1:fornlamning&QUERY_LAYERS=lamningar_v1:fornlamning&INFO_FORMAT=application/json&I=${Math.round(point.x)}&J=${Math.round(point.y)}`;
+                    const res = await fetch(url); const data = await res.json();
+                    if (data && data.features && data.features.length > 0) {
+                        const props = data.features[0].properties; const namn = props.lamningsnamn || props.lamningstyp || "Fornlämning";
+                        const r_url = props.url || `https://app.raa.se/open/fornsok/lamning/${props.lamnings_id || props.id}`;
+                        L.popup().setLatLng(latlng).setContent(`<div class="p-2 min-w-[200px]"><h3 class="font-bold text-orange-600 mb-1">${namn}</h3><p class="text-sm mb-2 text-slate-700">${props.antikvarisk_bedomning || 'Ingen bedömning'}</p><a href="${r_url}" target="_blank" class="text-blue-500 hover:underline text-xs font-bold">Läs mer på Fornsök ↗</a></div>`).openOn(map);
+                    }
+                } catch (err) {}
+            }
+        };
+
+        // ==========================================
+        // MODUL 4: ANVÄNDARGRÄNSSNITT
+        // ==========================================
+        const UI = {
+            showLoader: (title, text) => { document.getElementById('loaderTitle').innerText = title; document.getElementById('globalLoader').classList.remove('hidden'); },
+            hideLoader: () => document.getElementById('globalLoader').classList.add('hidden'),
+
+            requireLogin: (message) => {
+                showToast(message, 5000);
+                document.getElementById('authModal').classList.remove('hidden');
+            },
+
+            init: () => {
+                document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && State.pending.source !== null) { State.resetPending(); showToast("Punktval avbrutet."); } });
+                document.getElementById('imageUpload').addEventListener('change', (e) => {
+                    // En manuellt vald fil innebär alltid en ny karta - glöm ev. tidigare redigerad arkiv-karta och dess punkter.
+                    // Bakgrundskartor (Maps.backgroundLayers) ligger separat och påverkas inte av detta.
+                    State.currentMapId = null;
+                    State.gcpData = [];
+                    State.renderAllMarkers();
+                    if (Maps.geoTiffLayer) { Maps.right.removeLayer(Maps.geoTiffLayer); Maps.geoTiffLayer = null; document.getElementById('opacityControl').classList.add('hidden'); }
+                    UI.handleImageUpload(e);
+                });
+                document.getElementById('uploadPrompt').addEventListener('click', () => document.getElementById('imageUpload').click());
+                document.getElementById('opacitySlider').addEventListener('input', (e) => { if(Maps.geoTiffLayer && !State.isSwipeMode) Maps.geoTiffLayer.setOpacity(parseFloat(e.target.value)); });
+                
+                document.getElementById('toggleLoupeBtn').addEventListener('click', (e) => {
+                    State.isLoupeActive = !State.isLoupeActive; const btn = e.currentTarget;
+                    if(State.isLoupeActive) { btn.classList.replace('bg-slate-700', 'bg-blue-600'); btn.classList.replace('hover:bg-slate-600', 'hover:bg-blue-500'); btn.classList.replace('text-slate-400', 'text-white'); showToast("Förstoringsglas: PÅ", 2000); } 
+                    else { btn.classList.replace('bg-blue-600', 'bg-slate-700'); btn.classList.replace('hover:bg-blue-500', 'hover:bg-slate-600'); btn.classList.replace('text-white', 'text-slate-400'); document.getElementById('loupe').style.display = 'none'; showToast("Förstoringsglas: AV", 2000); }
+                });
+
+                // Återställ Fältläge (stäng arkivkarta)
+                document.getElementById('closeArchiveMapBtn').addEventListener('click', () => {
+                    document.getElementById('imageContainerWrapper').classList.remove('hidden');
+                    document.getElementById('rightMapWrapper').classList.remove('w-full');
+                    document.getElementById('rightMapWrapper').classList.add('w-1/2');
+                    setTimeout(() => { Maps.right.invalidateSize(); }, 300);
+                    if(Maps.geoTiffLayer) { Maps.right.removeLayer(Maps.geoTiffLayer); Maps.geoTiffLayer = null; document.getElementById('opacityControl').classList.add('hidden'); }
+                    document.getElementById('closeArchiveMapBtn').classList.add('hidden');
+                });
+
+                UI.setupExportButton(); UI.setupGpsButton(); UI.setupToolPanel(); UI.setupPanels(); AuthLogic.init();
+            },
+
+            setupToolPanel: () => {
+                const opSlider = document.getElementById('opacitySlider');
+                const swContainer = document.getElementById('swipeContainer'); const swHandle = document.getElementById('swipeHandle');
+                const btnOp = document.getElementById('modeOpacityBtn'); const btnSw = document.getElementById('modeSwipeBtn'); const wrapOp = document.getElementById('opacitySliderWrapper');
+
+                opSlider.addEventListener('input', (e) => { if(Maps.geoTiffLayer && !State.isSwipeMode) Maps.geoTiffLayer.setOpacity(parseFloat(e.target.value)); });
+
+                // Svep-handtaget dras direkt (istället för via ett osynligt <input type=range>
+                // vars 4px-breda tumme sällan låg under den synliga cirkeln - klick föll då
+                // igenom till Leaflet-kartan under och panorerade den istället för att svepa).
+                const setSwipeValue = (pct) => {
+                    pct = Math.max(0, Math.min(1, pct));
+                    State.swipeVal = pct;
+                    swHandle.style.left = `calc(${pct * 100}% - 16px)`;
+                    Maps.updateSwipeClip();
+                };
+                let isDraggingSwipe = false;
+                const dragFromClientX = (clientX) => {
+                    const rect = swContainer.getBoundingClientRect();
+                    setSwipeValue((clientX - rect.left) / rect.width);
+                };
+                swHandle.addEventListener('mousedown', (e) => { e.preventDefault(); isDraggingSwipe = true; dragFromClientX(e.clientX); });
+                document.addEventListener('mousemove', (e) => { if (isDraggingSwipe) dragFromClientX(e.clientX); });
+                document.addEventListener('mouseup', () => { isDraggingSwipe = false; });
+
+                swHandle.addEventListener('touchstart', (e) => { isDraggingSwipe = true; dragFromClientX(e.touches[0].clientX); }, { passive: true });
+                document.addEventListener('touchmove', (e) => { if (isDraggingSwipe) dragFromClientX(e.touches[0].clientX); }, { passive: true });
+                document.addEventListener('touchend', () => { isDraggingSwipe = false; });
+
+                btnOp.addEventListener('click', () => {
+                    State.isSwipeMode = false; btnOp.classList.replace('bg-transparent', 'bg-slate-500'); btnOp.classList.replace('text-slate-300', 'text-white'); btnSw.classList.replace('bg-slate-500', 'bg-transparent'); btnSw.classList.replace('text-white', 'text-slate-300');
+                    wrapOp.classList.remove('hidden'); swContainer.classList.add('hidden');
+                    if(Maps.geoTiffLayer) { const c = Maps.geoTiffLayer.getContainer(); if(c) c.style.clipPath = 'none'; Maps.geoTiffLayer.setOpacity(parseFloat(opSlider.value)); }
+                });
+
+                btnSw.addEventListener('click', () => {
+                    State.isSwipeMode = true; btnSw.classList.replace('bg-transparent', 'bg-slate-500'); btnSw.classList.replace('text-slate-300', 'text-white'); btnOp.classList.replace('bg-slate-500', 'bg-transparent'); btnOp.classList.replace('text-white', 'text-slate-300');
+                    wrapOp.classList.add('hidden'); swContainer.classList.remove('hidden');
+                    if(Maps.geoTiffLayer) { Maps.geoTiffLayer.setOpacity(1.0); Maps.updateSwipeClip(); }
+                });
+            },
+
+            setupPanels: () => {
+                document.getElementById('toggleGcpBtn').addEventListener('click', () => { document.getElementById('stacPanel').classList.add('translate-x-full'); document.getElementById('gcpPanel').classList.toggle('translate-x-full'); });
+                document.getElementById('closeGcpPanelBtn').addEventListener('click', () => document.getElementById('gcpPanel').classList.add('translate-x-full'));
+
+                document.getElementById('toggleArchiveBtn').addEventListener('click', () => document.getElementById('archivePanel').classList.toggle('-translate-x-full'));
+                document.getElementById('closeArchiveBtn').addEventListener('click', () => document.getElementById('archivePanel').classList.add('-translate-x-full'));
+
+                document.getElementById('toggleStacBtn').addEventListener('click', () => { document.getElementById('gcpPanel').classList.add('translate-x-full'); document.getElementById('stacPanel').classList.toggle('translate-x-full'); });
+                document.getElementById('closeStacPanelBtn').addEventListener('click', () => document.getElementById('stacPanel').classList.add('translate-x-full'));
+                document.getElementById('stacSearchBtn').addEventListener('click', () => StacLogic.search());
+                document.getElementById('stacRemoveBtn').addEventListener('click', () => StacLogic.removeLayer());
+            },
+
+            renderGCPList: () => {
+                const container = document.getElementById('gcpListContainer'); document.getElementById('gcpBadge').innerText = State.gcpData.length;
+                if (State.gcpData.length === 0) { container.innerHTML = `<p class="text-slate-400 text-sm italic text-center mt-4">Inga punkter utsatta ännu.</p>`; return; }
+                container.innerHTML = '';
+                State.gcpData.forEach((pair, i) => {
+                    const num = i + 1; const div = document.createElement('div');
+                    div.className = "bg-slate-700 p-3 rounded shadow hover:bg-slate-600 transition cursor-pointer flex justify-between items-center group";
+                    div.innerHTML = `<div class="flex items-center space-x-3 pointer-events-none"><div class="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold">${num}</div><div class="text-sm"><p class="font-bold text-slate-200 group-hover:text-orange-400">Punkt ${num}</p><p class="text-[10px] text-slate-400">P: [${pair.pixel[0]}, ${pair.pixel[1]}]</p></div></div><button class="text-slate-400 hover:text-red-400 p-2 trash-btn" title="Ta bort">🗑️</button>`;
+                    div.addEventListener('click', (e) => { if (e.target.closest('.trash-btn')) return; Maps.left.setView([-pair.pixel[1], pair.pixel[0]], Maps.left.getZoom() > 0 ? Maps.left.getZoom() : 2, {animate: true}); Maps.right.setView(pair.latlng, 16, {animate: true}); UI.highlightMarkerPair(i, true); setTimeout(() => UI.highlightMarkerPair(i, false), 1500); });
+                    div.querySelector('.trash-btn').addEventListener('click', () => { if(confirm(`Vill du ta bort punkt ${num}?`)){ State.removeGCPPair(i); State.markAsDirty(); } });
+                    div.addEventListener('mouseenter', () => UI.highlightMarkerPair(i, true)); div.addEventListener('mouseleave', () => UI.highlightMarkerPair(i, false));
+                    container.appendChild(div);
+                });
+            },
+
+            highlightMarkerPair: (dataIndex, isHovering) => {
+                [Maps.markersLeftStore[dataIndex], Maps.markersRightStore[dataIndex]].forEach(m => { if (m && m.getElement()) { const el = m.getElement().firstChild; if(isHovering) el.classList.add('highlight-marker'); else el.classList.remove('highlight-marker'); } });
+            },
+
+            setupGpsButton: () => {
+                document.getElementById('gpsBtn').addEventListener('click', () => {
+                    const btn = document.getElementById('gpsBtn');
+                    if (!State.isTracking) { Maps.right.locate({setView: true, maxZoom: 16, watch: true, enableHighAccuracy: true}); btn.innerHTML = '<span class="mr-2">🛑</span> Stoppa GPS'; btn.classList.replace('bg-white', 'bg-red-50'); btn.classList.replace('text-slate-700', 'text-red-700'); State.isTracking = true; showToast("Söker efter din position...", 3000); } 
+                    else { Maps.right.stopLocate(); if (State.gpsMarker) Maps.right.removeLayer(State.gpsMarker); if (State.gpsCircle) Maps.right.removeLayer(State.gpsCircle); State.gpsMarker = null; State.gpsCircle = null; btn.innerHTML = '<span class="mr-2">📍</span> Starta GPS'; btn.classList.replace('bg-red-50', 'bg-white'); btn.classList.replace('text-red-700', 'text-slate-700'); State.isTracking = false; showToast("GPS avstängd."); }
+                });
+            },
+
+            setupExportButton: () => {
+                document.getElementById('saveBtn').addEventListener('click', async () => {
+                    if (!State.session) return UI.requireLogin("Logga in för att kunna beräkna och spara en inpassning.");
+                    const fileInput = document.getElementById('imageUpload');
+                    if (!fileInput.files[0] && !Maps.geoTiffLayer) return showToast("Ladda upp en bild först!");
+
+                    UI.showLoader("Exporterar...", "Processar...");
+                    const formData = new FormData();
+                    formData.append("image", fileInput.files[0] || new Blob(["dummy"], { type: "image/jpeg" }));
+                    formData.append("gcp_data", JSON.stringify(State.gcpData));
+                    formData.append("token", State.session.access_token);
+                    if (State.currentMapId) formData.append("map_id", State.currentMapId);
+                    let mName = prompt("Spara till arkivet: Vad vill du döpa kartan till?", fileInput.files[0] ? fileInput.files[0].name : "Uppdaterad karta");
+                    if(!mName) mName = "Nytt karta";
+                    formData.append("map_name", mName);
+
+                    try {
+                        const response = await fetch(`${API_BASE}/api/georeference`, { method: "POST", body: formData });
+                        const result = await response.json();
+                        if(response.ok) { UI.renderGeoTiff(result.geotiff_url); UI.updateSaveButton(false); if(result.map_id) State.currentMapId = result.map_id; if(State.session) AuthLogic.fetchArchive(); }
+                        else showToast(`Fel: ${result.detail || result.message}`);
+                    } catch (error) { showToast("Kunde inte nå servern! Kontrollera att main.py körs."); } 
+                    finally { UI.hideLoader(); }
+                });
+            },
+
+            showBanner: (msg) => { const b = document.getElementById('instructionBanner'); b.innerText = msg; b.classList.remove('opacity-0'); },
+            hideBanner: () => document.getElementById('instructionBanner').classList.add('opacity-0'),
+
+            updateSaveButton: (isUpdate = false) => {
+                const btn = document.getElementById('saveBtn'); const canSave = State.gcpData.length >= 3;
+                btn.disabled = !canSave; btn.classList.toggle('opacity-50', !canSave); btn.classList.toggle('cursor-not-allowed', !canSave);
+                if (canSave && isUpdate && Maps.geoTiffLayer) { btn.innerHTML = "🔄 Uppdatera Inpassning"; btn.classList.add('animate-pulse', 'bg-red-600', 'hover:bg-red-500'); btn.classList.remove('bg-green-600', 'hover:bg-green-500'); }
+                else if (canSave) { btn.innerHTML = "🧩 Beräkna Inpassning"; btn.classList.remove('animate-pulse', 'bg-red-600', 'hover:bg-red-500'); btn.classList.add('bg-green-600', 'hover:bg-green-500'); }
+            },
+
+            drawPendingMarker: (mapInstance, latlng, side) => {
+                if (side === 'left' && State.tempLeftMarker) mapInstance.removeLayer(State.tempLeftMarker);
+                if (side === 'right' && State.tempRightMarker) mapInstance.removeLayer(State.tempRightMarker);
+                const icon = L.divIcon({ className: 'custom-div-icon', html: `<div class="pending-marker" title="Klicka/Högerklicka för att avbryta.">?</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+                const marker = L.marker(latlng, { icon }).addTo(mapInstance);
+                const cancelFn = () => { State.resetPending(); showToast("Punktval avbrutet."); };
+                marker.on('click', cancelFn); marker.on('contextmenu', cancelFn);
+                if (side === 'left') State.tempLeftMarker = marker; else State.tempRightMarker = marker;
+            },
+
+            drawPermanentMarker: (mapInstance, coords, number, side, dataIndex) => {
+                const latlng = side === 'left' ? [-coords[1], coords[0]] : coords;
+                const icon = L.divIcon({ className: 'custom-div-icon', html: `<div class="image-marker cursor-move">${number}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+                const marker = L.marker(latlng, { icon, draggable: true }).addTo(side === 'left' ? Maps.leftMarkersLayer : Maps.rightMarkersLayer);
+                
+                if(side === 'left') Maps.markersLeftStore[dataIndex] = marker; else Maps.markersRightStore[dataIndex] = marker;
+                marker.on('mouseover', () => UI.highlightMarkerPair(dataIndex, true)); marker.on('mouseout', () => UI.highlightMarkerPair(dataIndex, false));
+                marker.on('dragend', (e) => { const p = e.target.getLatLng(); const newCoords = side === 'left' ? [Math.round(p.lng), Math.round(-p.lat)] : [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]; State.updateGCPPair(dataIndex, newCoords, side); State.markAsDirty(); UI.renderGCPList(); });
+                marker.on('contextmenu', () => { if (confirm(`Vill du ta bort punkt ${number}?`)) { State.removeGCPPair(dataIndex); State.markAsDirty(); } });
+            },
+
+            handleImageUpload: async (e) => {
+                const file = e.target.files[0]; if (!file) return;
+                if (file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff')) {
+                    if (!State.session) return UI.requireLogin("Logga in för att kunna förhandsgranska och passa in TIFF-kartor.");
+                    UI.showLoader("Skapar förhandsgranskning...", "Ansluter till backend...");
+                    const formData = new FormData(); formData.append("image", file); formData.append("token", State.session.access_token);
+                    try { const res = await fetch(`${API_BASE}/api/preview`, { method: "POST", body: formData }); if(res.ok) { const data = await res.json(); await UI.loadImageToLeftMap("data:image/jpeg;base64," + data.base64_image, data.original_width, data.original_height); } else showToast("Fel vid förhandsgranskning."); } catch(err) { showToast("Kunde inte ansluta till servern."); } finally { UI.hideLoader(); }
+                } else {
+                    const dataUrl = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => resolve(ev.target.result);
+                        reader.onerror = () => reject(reader.error);
+                        reader.readAsDataURL(file);
+                    });
+                    await UI.loadImageToLeftMap(dataUrl);
+                }
+            },
+
+            loadImageToLeftMap: (dataUrl, w, h) => {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        State.leftImageSrc = img.src; State.leftImageW = w || img.width; State.leftImageH = h || img.height;
+                        Maps.currentImageBounds = [[-(h || img.height), 0], [0, (w || img.width)]];
+                        if (Maps.imageOverlay) { Maps.left.removeLayer(Maps.imageOverlay); Maps.imageOverlay = null; }
+                        document.getElementById('leftMap').classList.remove('hidden'); document.getElementById('uploadPrompt').classList.add('hidden');
+                        setTimeout(() => { Maps.left.invalidateSize(); Maps.imageOverlay = L.imageOverlay(img.src, Maps.currentImageBounds).addTo(Maps.left); Maps.left.fitBounds(Maps.currentImageBounds); resolve(); }, 50);
+                    };
+                    img.src = dataUrl;
+                });
+            },
+
+            renderGeoTiff: async (url) => {
+                showToast("Laddar ner och renderar GeoTIFF på moderna kartan...", 5000);
+                try {
+                    const res = await fetch(url); if(!res.ok) throw new Error("Kunde inte hämta kartfilen.");
+                    const buf = await res.arrayBuffer(); const raster = await parseGeoraster(buf);
+
+                    document.getElementById('opacitySlider').value = 0.7; State.previousOpacity = undefined;
+                    document.getElementById('opacityLabelRight').innerText = "Gammal Karta";
+                    if(State.isSwipeMode) document.getElementById('modeOpacityBtn').click();
+
+                    const layer = UI.buildGeoRasterLayer(raster, 0.7);
+
+                    if(Maps.geoTiffLayer) { Maps.right.removeLayer(Maps.geoTiffLayer); Maps.geoTiffLayer = null; }
+                    Maps.geoTiffLayer = layer; layer.addTo(Maps.right);
+                    if (State.isSwipeMode) Maps.updateSwipeClip();
+                    try { Maps.right.fitBounds(layer.getBounds(), { padding: [20, 20], maxZoom: 18 }); } catch(e) {}
+
+                    document.getElementById('opacityControl').classList.remove('hidden');
+                    showToast("Magiskt! Din historiska karta är utplacerad.", 4000);
+                } catch(err) { showToast("Kunde inte rita ut kartan."); }
+            },
+
+            // resolution: hur många pixlar per ruta som räknas om vid varje zoom/pan.
+            // 128 ger skarpast bild men tar en stund att räkna om initialt när flera
+            // rasterlager är aktiva samtidigt - en medveten avvägning för skärpa.
+            buildGeoRasterLayer: (raster, opacity, zIndex = 400, resolution = 128) => new GeoRasterLayer({
+                georaster: raster, opacity, resolution, zIndex, keepBuffer: 8, updateWhenZooming: false,
+                pixelValuesToColorFn: vals => {
+                    if (!vals || vals.length === 0) return null; const r = vals[0]; if (r === undefined || r === null || Number.isNaN(r) || r === 0) return null;
+                    const g = vals.length > 1 ? vals[1] : r; const b = vals.length > 2 ? vals[2] : r;
+                    const safeR = Math.max(0, Math.min(255, Math.round(r))); const safeG = Math.max(0, Math.min(255, Math.round(g))); const safeB = Math.max(0, Math.min(255, Math.round(b)));
+                    if (safeR === 0 && safeG === 0 && safeB === 0) return null; return `rgb(${safeR},${safeG},${safeB})`;
+                }
+            }),
+
+            addBackgroundLayer: async (id, name, url) => {
+                showToast(`Laddar "${name}" som referenskarta...`, 4000);
+                try {
+                    // Om samma karta redan ligger som bakgrund - ta bort den gamla instansen
+                    // först så vi inte samlar på oss dubbletter i kartväljaren.
+                    const existing = Maps.backgroundLayers[id];
+                    if (existing) { Maps.right.removeLayer(existing.layer); Maps.layersControl.removeLayer(existing.layer); delete Maps.backgroundLayers[id]; }
+
+                    const res = await fetch(url); if(!res.ok) throw new Error("Kunde inte hämta kartfilen.");
+                    const buf = await res.arrayBuffer(); const raster = await parseGeoraster(buf);
+                    const layer = UI.buildGeoRasterLayer(raster, 1.0); // Full opacitet - en referenskarta ska visas skarpt, inte jämföras via genomskinlighet
+                    layer.addTo(Maps.right);
+                    Maps.layersControl.addOverlay(layer, `📌 ${name}`);
+                    Maps.backgroundLayers[id] = { layer, name };
+                    try { Maps.right.fitBounds(layer.getBounds(), { padding: [20, 20], maxZoom: 18 }); } catch(e) {}
+                    showToast(`"${name}" tillagd - kryssa av/på den i kartväljaren (⧉) uppe till höger.`, 5000);
+                } catch(err) { showToast(`Kunde inte lägga till "${name}" som bakgrund: ${err.message}`); }
+            }
+        };
+
+        Maps.init(); UI.init();
+
+        // FAS 3: Fältläge - på en mobil/liten skärm är målet att direkt stå i
+        // fältet med GPS-position synlig, utan att behöva trycka "Starta GPS" själv.
+        if (window.matchMedia('(max-width: 768px)').matches) {
+            document.getElementById('gpsBtn').click();
+        }
+    </script>
+</body>
+</html>
