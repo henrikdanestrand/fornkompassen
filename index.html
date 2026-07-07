@@ -106,8 +106,11 @@
             </button>
 
             <!-- NYTT: Flygfoto från Lantmäteriets STAC-bild -->
-            <!-- Återaktiverad 2026-07-06: Geotorget-behörigheten "Ortofoto Nedladdning" godkänd. -->
-            <button id="toggleStacBtn" class="desktop-only bg-teal-600 hover:bg-teal-500 px-3 py-2 rounded text-sm font-semibold transition border border-teal-500 flex items-center">
+            <!-- Pausad igen 2026-07-06: Lantmäteriets användningsvillkor för Ortofoto
+                 Nedladdning tillåter bara privat bruk "inom din närmaste familjekrets" -
+                 oförenligt med att Fornkompassen är en publik, flera-användare-app.
+                 Ta bort "hidden" bara om vi hittar ett licensspår som faktiskt tillåter det. -->
+            <button id="toggleStacBtn" class="desktop-only bg-teal-600 hover:bg-teal-500 px-3 py-2 rounded text-sm font-semibold transition border border-teal-500 flex items-center hidden">
                 <span>🛰️ Flygfoto</span>
             </button>
 
@@ -776,8 +779,14 @@
                 
                 const fornlamningarLayer = L.tileLayer.wms('https://pub.raa.se/visning/lamningar_v1/wms', { layers: 'lamningar_v1:fornlamning', format: 'image/png', transparent: true, version: '1.3.0', attribution: '&copy; RAÄ' });
 
+                // SGU (Sveriges geologiska undersökning) - helt öppen data (CC0) sedan
+                // juni 2024, inga inloggningsvillkor eller "familjekrets"-begränsningar
+                // som Lantmäteriets flygfoto. Verifierat direkt mot deras GeoServer.
+                const jordarterLayer = L.tileLayer.wms('https://maps3.sgu.se/geoserver/jord/ows', { layers: 'jord:SE.GOV.SGU.JORD.GRUNDLAGER.25K', format: 'image/png', transparent: true, version: '1.3.0', attribution: '&copy; SGU' });
+                const berggrundLayer = L.tileLayer.wms('https://maps3.sgu.se/geoserver/berg/ows', { layers: 'berg:SE.GOV.SGU.BERGGRUND_NA10', format: 'image/png', transparent: true, version: '1.3.0', attribution: '&copy; SGU' });
+
                 topoLayer.addTo(Maps.right);
-                Maps.layersControl = L.control.layers({"Terräng & Höjdkurvor": topoLayer, "Google Satellit": googleSatLayer, "Standard Karta (OSM)": osmLayer, "Google Karta": googleMapLayer}, { "Visa Fornlämningar (RAÄ)": fornlamningarLayer }).addTo(Maps.right);
+                Maps.layersControl = L.control.layers({"Terräng & Höjdkurvor": topoLayer, "Google Satellit": googleSatLayer, "Standard Karta (OSM)": osmLayer, "Google Karta": googleMapLayer}, { "Visa Fornlämningar (RAÄ)": fornlamningarLayer, "Visa Jordarter (SGU)": jordarterLayer, "Visa Berggrund (SGU)": berggrundLayer }).addTo(Maps.right);
 
                 Maps.left.on('click', Handlers.onLeftClick); Maps.right.on('click', Handlers.onRightClick);
                 Maps.left.on('mousemove', Handlers.onLeftMouseMove); Maps.left.on('mouseout', () => document.getElementById('loupe').style.display = 'none');
