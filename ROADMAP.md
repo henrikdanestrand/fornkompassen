@@ -22,9 +22,13 @@ Låg insats, ingen inverkan på övriga delar - naturligt att börja här.
 ### 6.2 Fältfunktioner
 Bygger vidare på GPS-/fältläget från Fas 3.
 
-- [ ] **Kompassriktning** - visa enhetens riktning (gyroskop/kompass-API).
-- [ ] **Lista över fornlämningar nära GPS-position** - komplement till
-      dagens klick-på-kartan mot RAÄ:s WMS-lager.
+- [x] **Kompassriktning** - visa enhetens riktning (deviceorientation/
+      deviceorientationabsolute, iOS-behörighet hanterad, roterande pil +
+      gradtal i knappen).
+- [x] **Lista över fornlämningar nära GPS-position** - eftersom RAÄ:s WFS är
+      avstängt, byggd via GetFeatureInfo med stor pixel-BUFFER/FEATURE_COUNT
+      runt GPS-punkten (~2 km), sorterad på avstånd. Hanterar att RAÄ:s
+      geometrier blandar Point/Polygon/MultiPolygon.
 - [ ] **Offline-cachning** - cacha redan nedladdade/inpassade kartor så
       appen fungerar utan uppkoppling i skogen. Störst praktisk nytta för
       fältarbete, men störst teknisk insats i den här fasen - gör klart
