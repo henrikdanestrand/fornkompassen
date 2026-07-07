@@ -2,7 +2,7 @@
 <html lang="sv">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Fornkompassen - Inpassning & Arkiv</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
@@ -59,6 +59,12 @@
         #loupe::after {
             content: '+'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             color: #f97316; font-size: 24px; font-weight: normal;
+        }
+
+        /* Håller Opacitet/Svepläge-panelen ovanför mobilens systemlist (gest-/knapprad)
+           istället för att den ska hamna under den och delvis döljas. */
+        #opacityControl {
+            bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
         }
 
         /* ==========================================
@@ -159,10 +165,10 @@
             </button>
             
             <!-- Kontrollpanel för Opacitet & Svep -->
-            <div id="opacityControl" class="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-800/95 backdrop-blur text-white px-2 py-2 rounded-full shadow-2xl z-[1100] flex flex-col items-center hidden border border-slate-600 transition-all">
+            <div id="opacityControl" class="absolute left-1/2 transform -translate-x-1/2 bg-slate-800/95 backdrop-blur text-white px-2 py-2 rounded-full shadow-2xl z-[1100] flex flex-col items-center hidden border border-slate-600 transition-all">
                 <div class="flex space-x-1 mb-2 bg-slate-700 p-1 rounded-full w-full justify-center">
                     <button id="modeOpacityBtn" class="px-4 py-1 text-xs font-bold rounded-full bg-slate-500 text-white transition-colors">Opacitet</button>
-                    <button id="modeSwipeBtn" class="px-4 py-1 text-xs font-bold rounded-full text-slate-300 hover:text-white transition-colors">Svep-läge</button>
+                    <button id="modeSwipeBtn" class="px-4 py-1 text-xs font-bold rounded-full text-slate-300 hover:text-white transition-colors">Svepläge</button>
                 </div>
                 <div id="opacitySliderWrapper" class="flex items-center space-x-4 px-4 pb-2">
                     <span id="opacityLabelLeft" class="text-xs font-bold uppercase tracking-widest text-slate-300">Satellit</span>
@@ -779,6 +785,10 @@
                 Maps.right.on('locationfound', (e) => {
                     const radius = e.accuracy / 2;
                     if (!State.gpsMarker) {
+                        // Centrera/zooma bara vid den ALLRA FÖRSTA positioneringen - annars
+                        // (med watch:true) drar varje ny GPS-uppdatering tillbaka kartan hit
+                        // och river upp om användaren manuellt zoomat ut eller panorerat.
+                        Maps.right.setView(e.latlng, 16);
                         State.gpsMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#3b82f6", color: "#ffffff", weight: 3, opacity: 1, fillOpacity: 1 }).addTo(Maps.right);
                         State.gpsCircle = L.circle(e.latlng, radius, { color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.15, weight: 1 }).addTo(Maps.right);
                     } else { State.gpsMarker.setLatLng(e.latlng); State.gpsCircle.setLatLng(e.latlng); State.gpsCircle.setRadius(radius); }
@@ -968,7 +978,7 @@
             setupGpsButton: () => {
                 document.getElementById('gpsBtn').addEventListener('click', () => {
                     const btn = document.getElementById('gpsBtn');
-                    if (!State.isTracking) { Maps.right.locate({setView: true, maxZoom: 16, watch: true, enableHighAccuracy: true}); btn.innerHTML = '<span class="mr-2">🛑</span> Stoppa GPS'; btn.classList.replace('bg-white', 'bg-red-50'); btn.classList.replace('text-slate-700', 'text-red-700'); State.isTracking = true; showToast("Söker efter din position...", 3000); } 
+                    if (!State.isTracking) { Maps.right.locate({watch: true, enableHighAccuracy: true}); btn.innerHTML = '<span class="mr-2">🛑</span> Stoppa GPS'; btn.classList.replace('bg-white', 'bg-red-50'); btn.classList.replace('text-slate-700', 'text-red-700'); State.isTracking = true; showToast("Söker efter din position...", 3000); }
                     else { Maps.right.stopLocate(); if (State.gpsMarker) Maps.right.removeLayer(State.gpsMarker); if (State.gpsCircle) Maps.right.removeLayer(State.gpsCircle); State.gpsMarker = null; State.gpsCircle = null; btn.innerHTML = '<span class="mr-2">📍</span> Starta GPS'; btn.classList.replace('bg-red-50', 'bg-white'); btn.classList.replace('text-red-700', 'text-slate-700'); State.isTracking = false; showToast("GPS avstängd."); }
                 });
             },
