@@ -7,16 +7,17 @@ varandra.
 
 ## Fas 6: Fältfunktioner & UX-förfining
 
-### 6.1 Snabba UX-vinster
+### 6.1 Snabba UX-vinster ✅ klar 2026-07-06
 Låg insats, ingen inverkan på övriga delar - naturligt att börja här.
 
-- [ ] **Ångra istället för bekräfta** - byt blockerande `confirm()`-dialoger
+- [x] **Ångra istället för bekräfta** - byt blockerande `confirm()`-dialoger
       (t.ex. vid radering av GCP-punkt) mot en toast med en "Ångra"-knapp.
-- [ ] **Sökruta för plats** - hoppa till en adress/ort istället för att bara
-      panorera manuellt eller vänta på GPS.
-- [ ] **Avståndsmätning** - mät avstånd mellan två punkter på kartan.
-- [ ] **Ljust/högkontrastläge** - ett läge anpassat för starkt dagsljus
-      utomhus, som komplement till dagens mörka tema.
+- [x] **Sökruta för plats** - hoppa till en adress/ort istället för att bara
+      panorera manuellt eller vänta på GPS (Nominatim/OpenStreetMap).
+- [x] **Avståndsmätning** - mät avstånd mellan två punkter på kartan.
+- [x] **Ljust/högkontrastläge** - ett läge anpassat för starkt dagsljus
+      utomhus, som komplement till dagens mörka tema (☀️/🌙-knapp i headern,
+      sparas i localStorage).
 
 ### 6.2 Fältfunktioner
 Bygger vidare på GPS-/fältläget från Fas 3.

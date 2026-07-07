@@ -68,6 +68,26 @@
         }
 
         /* ==========================================
+           FAS 6.1: LJUST/HÖGKONTRASTLÄGE FÖR FÄLTBRUK
+           Appen är byggd med Tailwind-klasser direkt i HTML:en, inte med
+           CSS-variabler - så istället för att skriva om varje element för
+           hand görs en bred omstyrning av de mörka slate-klasser som redan
+           används. Pragmatisk första version, inte pixelperfekt. ========== */
+        body.light-mode { background-color: #f1f5f9; }
+        body.light-mode [class*="bg-slate-900"],
+        body.light-mode [class*="bg-slate-800"] { background-color: #ffffff !important; }
+        body.light-mode [class*="bg-slate-700"],
+        body.light-mode [class*="bg-slate-600"] { background-color: #e2e8f0 !important; }
+        body.light-mode [class*="hover:bg-slate-600"]:hover,
+        body.light-mode [class*="hover:bg-slate-500"]:hover { background-color: #cbd5e1 !important; }
+        body.light-mode [class*="text-white"],
+        body.light-mode [class*="text-slate-200"],
+        body.light-mode [class*="text-slate-300"] { color: #1e293b !important; }
+        body.light-mode [class*="text-slate-400"] { color: #475569 !important; }
+        body.light-mode [class*="border-slate-600"],
+        body.light-mode [class*="border-slate-700"] { border-color: #cbd5e1 !important; }
+
+        /* ==========================================
            FAS 3: FÄLTLÄGE & MOBILOPTIMERING
            På små skärmar (mobil/fält) är poängen att navigera med redan
            inpassade kartor + GPS - inte att sitta och passa in nya kartor.
@@ -117,6 +137,11 @@
             <!-- NYTT: Inloggning / Logga ut -->
             <button id="authBtn" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm font-semibold transition border border-slate-600 flex items-center">
                 <span>🔑 Logga in</span>
+            </button>
+
+            <!-- NYTT: Ljust/högkontrastläge för fältbruk i starkt dagsljus -->
+            <button id="lightModeBtn" title="Ljust läge (för starkt dagsljus utomhus)" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm font-semibold transition border border-slate-600 flex items-center">
+                <span>☀️</span>
             </button>
 
             <div class="desktop-only w-px h-6 bg-slate-600 mx-1"></div>
@@ -182,6 +207,17 @@
 
             <button id="gpsBtn" class="absolute top-4 left-16 bg-white text-slate-700 px-4 py-2 rounded shadow-lg z-[1000] font-bold text-sm border border-slate-300 hover:bg-slate-50 transition flex items-center">
                 <span class="mr-2">📍</span> Starta GPS
+            </button>
+
+            <!-- NYTT: Sökruta för att hoppa till en plats (Nominatim/OpenStreetMap) -->
+            <div id="searchBox" class="absolute top-16 left-16 z-[1000] w-64">
+                <input id="locationSearchInput" type="text" placeholder="🔍 Sök plats..." autocomplete="off" class="w-full bg-white text-slate-700 px-4 py-2 rounded shadow-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500">
+                <div id="locationSearchResults" class="mt-1 bg-white rounded shadow-lg border border-slate-300 overflow-hidden hidden"></div>
+            </div>
+
+            <!-- NYTT: Avståndsmätning -->
+            <button id="measureBtn" class="absolute top-4 left-56 bg-white text-slate-700 px-4 py-2 rounded shadow-lg z-[1000] font-bold text-sm border border-slate-300 hover:bg-slate-50 transition flex items-center">
+                <span class="mr-2">📏</span> Mät avstånd
             </button>
 
             <div id="map" class="cursor-crosshair"></div>
@@ -290,9 +326,31 @@
 
         function showToast(msg, duration = 4000) {
             const t = document.getElementById('toast');
+            t.innerHTML = '';
             t.innerText = msg;
             t.classList.remove('opacity-0');
-            setTimeout(() => t.classList.add('opacity-0'), duration);
+            clearTimeout(showToast._hideTimer);
+            showToast._hideTimer = setTimeout(() => t.classList.add('opacity-0'), duration);
+        }
+
+        // Visar en åtgärd som redan utförts, med en "Ångra"-knapp istället för att
+        // fråga "är du säker?" INNAN man agerar. onCommit körs bara om man INTE
+        // ångrar inom tidsfönstret - t.ex. den faktiska DELETE-anropet mot Supabase.
+        function showUndoToast(msg, onUndo, onCommit, duration = 5000) {
+            const t = document.getElementById('toast');
+            let undone = false;
+            clearTimeout(showToast._hideTimer);
+            t.innerHTML = `<div class="flex items-center justify-between gap-4"><span>${msg}</span><button class="text-orange-400 font-bold underline flex-shrink-0">Ångra</button></div>`;
+            t.classList.remove('opacity-0');
+            const commitTimer = setTimeout(() => {
+                if (!undone) { onCommit(); t.classList.add('opacity-0'); }
+            }, duration);
+            t.querySelector('button').addEventListener('click', () => {
+                undone = true;
+                clearTimeout(commitTimer);
+                onUndo();
+                t.classList.add('opacity-0');
+            });
         }
 
         // ==========================================
@@ -301,7 +359,7 @@
         const State = {
             session: null, // Håller koll på inloggningen
             
-            gcpData: [], currentMarkerNumber: 1, currentMapId: null, isLoadingMap: false,
+            gcpData: [], currentMarkerNumber: 1, currentMapId: null, isLoadingMap: false, isMeasuring: false,
             pending: { source: null, pixel: null, latlng: null },
             tempLeftMarker: null, tempRightMarker: null,
             previousOpacity: undefined, isTracking: false, gpsMarker: null, gpsCircle: null,
@@ -322,6 +380,7 @@
             addGCPPair: () => { State.gcpData.push({ pixel: State.pending.pixel, latlng: State.pending.latlng }); State.resetPending(); State.renderAllMarkers(); State.markAsDirty(); },
             updateGCPPair: (index, newCoords, side) => { if (side === 'left') State.gcpData[index].pixel = newCoords; else State.gcpData[index].latlng = newCoords; UI.updateSaveButton(); },
             removeGCPPair: (index) => { State.gcpData.splice(index, 1); State.renderAllMarkers(); },
+            restoreGCPPair: (index, pair) => { State.gcpData.splice(index, 0, pair); State.renderAllMarkers(); },
             markAsDirty: () => { if (Maps.geoTiffLayer) { UI.updateSaveButton(true); showToast("Ändring upptäckt! Klicka på 'Uppdatera karta' när du är färdig.", 4000); } },
             renderAllMarkers: () => {
                 Maps.leftMarkersLayer.clearLayers(); Maps.rightMarkersLayer.clearLayers();
@@ -499,11 +558,14 @@
                         </div>
                     `;
 
-                    div.querySelector('.delete-map-btn').addEventListener('click', async () => {
-                        if(confirm(`Är du säker på att du vill radera "${map.name}"?`)){
-                            await supabaseClient.from('historical_maps').delete().eq('id', map.id);
-                            AuthLogic.fetchArchive();
-                        }
+                    div.querySelector('.delete-map-btn').addEventListener('click', () => {
+                        // Döljs direkt för snabb känsla, men raderas i databasen först
+                        // när "Ångra"-fönstret gått ut - ingen DB-anrop görs vid Ångra.
+                        div.style.display = 'none';
+                        showUndoToast(`"${map.name}" borttagen.`,
+                            () => { div.style.display = ''; },
+                            async () => { await supabaseClient.from('historical_maps').delete().eq('id', map.id); }
+                        );
                     });
 
                     div.querySelector('.rename-map-btn').addEventListener('click', async () => {
@@ -829,6 +891,7 @@
                 }
             },
             onRightClick: (e) => {
+                if (State.isMeasuring) return; // mätläge äger klick på högerkartan just nu
                 const latlngPair = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];
                 if (State.pending.source === 'left') { State.pending.latlng = latlngPair; State.addGCPPair(); } 
                 else {
@@ -907,7 +970,7 @@
                     document.getElementById('closeArchiveMapBtn').classList.add('hidden');
                 });
 
-                UI.setupExportButton(); UI.setupGpsButton(); UI.setupToolPanel(); UI.setupPanels(); AuthLogic.init();
+                UI.setupExportButton(); UI.setupGpsButton(); UI.setupToolPanel(); UI.setupPanels(); UI.setupLocationSearch(); UI.setupMeasureTool(); UI.setupLightMode(); AuthLogic.init();
             },
 
             setupToolPanel: () => {
@@ -974,7 +1037,11 @@
                     div.className = "bg-slate-700 p-3 rounded shadow hover:bg-slate-600 transition cursor-pointer flex justify-between items-center group";
                     div.innerHTML = `<div class="flex items-center space-x-3 pointer-events-none"><div class="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold">${num}</div><div class="text-sm"><p class="font-bold text-slate-200 group-hover:text-orange-400">Punkt ${num}</p><p class="text-[10px] text-slate-400">P: [${pair.pixel[0]}, ${pair.pixel[1]}]</p></div></div><button class="text-slate-400 hover:text-red-400 p-2 trash-btn" title="Ta bort">🗑️</button>`;
                     div.addEventListener('click', (e) => { if (e.target.closest('.trash-btn')) return; Maps.left.setView([-pair.pixel[1], pair.pixel[0]], Maps.left.getZoom() > 0 ? Maps.left.getZoom() : 2, {animate: true}); Maps.right.setView(pair.latlng, 16, {animate: true}); UI.highlightMarkerPair(i, true); setTimeout(() => UI.highlightMarkerPair(i, false), 1500); });
-                    div.querySelector('.trash-btn').addEventListener('click', () => { if(confirm(`Vill du ta bort punkt ${num}?`)){ State.removeGCPPair(i); State.markAsDirty(); } });
+                    div.querySelector('.trash-btn').addEventListener('click', () => {
+                        const removedPair = State.gcpData[i];
+                        State.removeGCPPair(i); State.markAsDirty();
+                        showUndoToast(`Punkt ${num} borttagen.`, () => { State.restoreGCPPair(i, removedPair); }, () => {});
+                    });
                     div.addEventListener('mouseenter', () => UI.highlightMarkerPair(i, true)); div.addEventListener('mouseleave', () => UI.highlightMarkerPair(i, false));
                     container.appendChild(div);
                 });
@@ -989,6 +1056,94 @@
                     const btn = document.getElementById('gpsBtn');
                     if (!State.isTracking) { Maps.right.locate({watch: true, enableHighAccuracy: true}); btn.innerHTML = '<span class="mr-2">🛑</span> Stoppa GPS'; btn.classList.replace('bg-white', 'bg-red-50'); btn.classList.replace('text-slate-700', 'text-red-700'); State.isTracking = true; showToast("Söker efter din position...", 3000); }
                     else { Maps.right.stopLocate(); if (State.gpsMarker) Maps.right.removeLayer(State.gpsMarker); if (State.gpsCircle) Maps.right.removeLayer(State.gpsCircle); State.gpsMarker = null; State.gpsCircle = null; btn.innerHTML = '<span class="mr-2">📍</span> Starta GPS'; btn.classList.replace('bg-red-50', 'bg-white'); btn.classList.replace('text-red-700', 'text-slate-700'); State.isTracking = false; showToast("GPS avstängd."); }
+                });
+            },
+
+            setupLocationSearch: () => {
+                const input = document.getElementById('locationSearchInput');
+                const results = document.getElementById('locationSearchResults');
+                let debounceTimer = null;
+
+                const runSearch = async () => {
+                    const query = input.value.trim();
+                    if (query.length < 3) { results.classList.add('hidden'); return; }
+                    try {
+                        // Nominatim (OpenStreetMap) - gratis geokodning, ingen nyckel behövs.
+                        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&countrycodes=se`;
+                        const res = await fetch(url);
+                        if (!res.ok) return;
+                        const places = await res.json();
+                        if (places.length === 0) { results.innerHTML = `<p class="text-slate-500 text-sm italic p-3">Inga träffar.</p>`; results.classList.remove('hidden'); return; }
+                        results.innerHTML = '';
+                        places.forEach(place => {
+                            const item = document.createElement('div');
+                            item.className = "p-2 text-sm text-slate-700 hover:bg-orange-50 cursor-pointer border-b border-slate-100 last:border-0 truncate";
+                            item.textContent = place.display_name;
+                            item.addEventListener('click', () => {
+                                Maps.right.setView([parseFloat(place.lat), parseFloat(place.lon)], 15);
+                                results.classList.add('hidden');
+                                input.value = place.display_name;
+                            });
+                            results.appendChild(item);
+                        });
+                        results.classList.remove('hidden');
+                    } catch (err) { /* tyst fel - inte kritiskt för appens huvudflöde */ }
+                };
+
+                input.addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(runSearch, 400); });
+                input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(debounceTimer); runSearch(); } });
+                document.addEventListener('click', (e) => { if (!e.target.closest('#searchBox')) results.classList.add('hidden'); });
+            },
+
+            setupLightMode: () => {
+                const btn = document.getElementById('lightModeBtn');
+                const apply = (on) => {
+                    document.body.classList.toggle('light-mode', on);
+                    btn.innerHTML = on ? '<span>🌙</span>' : '<span>☀️</span>';
+                    btn.title = on ? "Mörkt läge" : "Ljust läge (för starkt dagsljus utomhus)";
+                };
+                apply(localStorage.getItem('fornkompassen_light_mode') === 'true');
+                btn.addEventListener('click', () => {
+                    const on = !document.body.classList.contains('light-mode');
+                    apply(on);
+                    localStorage.setItem('fornkompassen_light_mode', on ? 'true' : 'false');
+                });
+            },
+
+            setupMeasureTool: () => {
+                const btn = document.getElementById('measureBtn');
+                let points = [], polyline = null, markers = [];
+
+                const formatDistance = (m) => m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`;
+                const totalDistance = () => { let t = 0; for (let i = 1; i < points.length; i++) t += points[i - 1].distanceTo(points[i]); return t; };
+                const updateLabel = () => { btn.innerHTML = points.length < 2 ? '<span class="mr-2">📏</span> Mät avstånd' : `<span class="mr-2">📏</span> ${formatDistance(totalDistance())}`; };
+
+                const clearMeasurement = () => {
+                    points = [];
+                    if (polyline) { Maps.right.removeLayer(polyline); polyline = null; }
+                    markers.forEach(m => Maps.right.removeLayer(m)); markers = [];
+                    updateLabel();
+                };
+
+                const onMapClick = (e) => {
+                    points.push(e.latlng);
+                    markers.push(L.circleMarker(e.latlng, { radius: 4, color: '#f97316', fillColor: '#f97316', fillOpacity: 1, weight: 2 }).addTo(Maps.right));
+                    if (polyline) Maps.right.removeLayer(polyline);
+                    if (points.length > 1) polyline = L.polyline(points, { color: '#f97316', weight: 3, dashArray: '6 6' }).addTo(Maps.right);
+                    updateLabel();
+                };
+
+                btn.addEventListener('click', () => {
+                    State.isMeasuring = !State.isMeasuring;
+                    if (State.isMeasuring) {
+                        btn.classList.add('bg-orange-50', 'border-orange-400'); btn.classList.remove('bg-white');
+                        Maps.right.on('click', onMapClick);
+                        showToast("Mätläge på - klicka på kartan för att mäta avstånd. Klicka på knappen igen för att avsluta.", 4000);
+                    } else {
+                        btn.classList.remove('bg-orange-50', 'border-orange-400'); btn.classList.add('bg-white');
+                        Maps.right.off('click', onMapClick);
+                        clearMeasurement();
+                    }
                 });
             },
 
@@ -1046,7 +1201,11 @@
                 if(side === 'left') Maps.markersLeftStore[dataIndex] = marker; else Maps.markersRightStore[dataIndex] = marker;
                 marker.on('mouseover', () => UI.highlightMarkerPair(dataIndex, true)); marker.on('mouseout', () => UI.highlightMarkerPair(dataIndex, false));
                 marker.on('dragend', (e) => { const p = e.target.getLatLng(); const newCoords = side === 'left' ? [Math.round(p.lng), Math.round(-p.lat)] : [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]; State.updateGCPPair(dataIndex, newCoords, side); State.markAsDirty(); UI.renderGCPList(); });
-                marker.on('contextmenu', () => { if (confirm(`Vill du ta bort punkt ${number}?`)) { State.removeGCPPair(dataIndex); State.markAsDirty(); } });
+                marker.on('contextmenu', () => {
+                    const removedPair = State.gcpData[dataIndex];
+                    State.removeGCPPair(dataIndex); State.markAsDirty();
+                    showUndoToast(`Punkt ${number} borttagen.`, () => { State.restoreGCPPair(dataIndex, removedPair); }, () => {});
+                });
             },
 
             handleImageUpload: async (e) => {
